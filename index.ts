@@ -1,7 +1,7 @@
-import { BehaviorSubject, of, Subject, from, race } from 'rxjs'
+import { BehaviorSubject, of, Subject, from, race, merge } from 'rxjs'
 import { map, withLatestFrom, mergeMap, filter, tap } from 'rxjs/operators'
 
-export default class RxQueue<T> {
+export class RxQueue<T> {
   public queue: T[] = []
   public out$ = new Subject<T>()
   public pushed = 0
@@ -20,8 +20,7 @@ export default class RxQueue<T> {
   }
 
   public push(value: T) {
-    // console.log(this)
-    if (this.completed) return
+    if (this.out$.closed) return
     if (this.awaited > 0) {
       this.awaited--
       this.out$.next(value)
@@ -34,7 +33,7 @@ export default class RxQueue<T> {
   }
 
   public next() {
-    if (this.completed) return
+    if (this.out$.closed) return
     if (!this.isEmpty) {
       const value = this.queue.shift()
       this.out$.next(value)
@@ -60,101 +59,149 @@ export default class RxQueue<T> {
   }
 }
 
-type DPC = [(...args: any) => void, ...args: any]
+export class RxQueue2<T> extends Subject<T> {
+  private queue: T[] = []
+  private awaited = 0
 
-class Dispatcher {
-  private state$ = new BehaviorSubject<string>('STATE_0')
-  private action$ = new RxQueue<string>()
-  private deferedAction$ = new RxQueue<string>()
+  public get isEmpty() {
+    return this.queue.length === 0
+  }
+  public get size() {
+    return this.queue.length
+  }
 
-  private waitUntilState = (state: string): Promise<void> => {
-    console.log('waitUntilState begin')
+  public next(value: T) {
+    if (this.closed) return
+    if (this.awaited > 0) {
+      this.awaited--
+      super.next(value)
+    } else {
+      this.queue.push(value)
+    }
+  }
+
+  // public putFirst(value: T) {
+  //   if (this.closed) return
+  //   if (this.awaited > 0) {
+  //     this.awaited--
+  //     super.next(value)
+  //   } else {
+  //     this.queue.unshift(value)
+  //   }
+  // }
+
+  public trigger() {
+    if (this.closed) return
+    if (!this.isEmpty) {
+      const value = this.queue.shift()
+      super.next(value)
+      return value
+    } else {
+      this.awaited++
+    }
+  }
+
+  public waitForTrigger = (): Promise<T> => {
     return new Promise(resolve => {
-      const sub = this.state$.pipe(filter(s => s === state)).subscribe(s => {
-        console.log('waitUntilState end')
+      const sub = this.subscribe(value => {
         sub.unsubscribe()
-        resolve()
+        resolve(value)
       })
     })
   }
+}
 
-  // private dpcQue: DPC[] = []
+type DeferedAction = [ expr: (s: string) => boolean, action: string ]
 
-  // private defer(...dpc: DPC) {
-  //   this.dpcQue.push(dpc)
-  // }
+class Dispatcher {
+  private state$ = new BehaviorSubject<string>('INITIAL')
+  private action$ = new RxQueue2<string>()
+  private deferedAction$ = new RxQueue2<string>()
 
-  // private execDpc = (dpc: DPC) => {
-  //   console.log('exec dpc', dpc)
-  //   const [fn, ...args] = dpc
-  //   fn.apply(this, args)
-  // }
+  private waitForStateList: DeferedAction[] = []
 
-  // private execDpcQue = () => {
-  //   while(this.dpcQue.length > 0) {
-  //     const dpc = this.dpcQue.pop()
-  //     this.execDpc(dpc)
-  //   }
+  // private waitUntilState = (state: string): Promise<void> => {
+  //   console.log('waitUntilState begin')
+  //   return new Promise(resolve => {
+  //     const sub = this.state$.pipe(filter(s => s === state)).subscribe(s => {
+  //       console.log('waitUntilState end')
+  //       sub.unsubscribe()
+  //       resolve()
+  //     })
+  //   })
   // }
 
   private defer(fn: (...args: any) => void, ...args: any) {
     fn.apply(this, args)
   }
 
+  private deferUntil(type: string, expr: (s: string) => boolean) {
+    console.log('----push waiting list')
+    this.waitForStateList.push([expr, type])
+  }
+
   public dispatch = async (type: string, state: string) => {
-    console.log(`>>> action ${type} (state: ${state})`)
+    console.log(`\n\n>>> action ${type} (state: ${state})`)
     switch (type) {
-      case 'LONG':
+      case 'SET_LONG':
         if (state !== 'READY') {
-          this.defer(async (type: string) => {
-            console.log('start waiting for state READY')
-            await this.waitUntilState('READY')
-            this.deferedAction$.push(type)
-            console.log('continue...')
-          }, type)
+          this.deferUntil(type, s => s === 'READY')
           return state
         }
-        return 'STATE_1'
+        return 'STATE_LONG'
       case 'SET_READY':
         return 'READY'
-      case 'SHORT':
-        return 'STATE_2'
+      case 'SET_SHORT':
+        return 'STATE_SHORT'
     }
     return state
   }
 
   public action(a: string) {
     console.log('IN ACTION', a)
-    this.action$.push(a)
+    this.action$.next(a)
   }
 
   private handleStateChange = (newState: string) => {
-    console.log(`start state change ${this.state$.value} => ${newState}`)
+    console.log(`----check defered action queue`, this.waitForStateList.map(v => v[1]))
+    for (let i = 0; i < this.waitForStateList.length; i++) {
+      const [expr, type] = this.waitForStateList[i]
+      if (expr(newState)) {
+        console.log('----found defered task', type)
+        this.waitForStateList.splice(i, 1)
+        this.deferedAction$.next(type)
+        break
+      }
+    }
+    console.log(`@@@ ${this.state$.value} => ${newState} @@@ \n\n\n`)
     this.state$.next(newState)
-    console.log(`<<< ${this.state$.value}`)
-    // this.execDpcQue()
+    
   }
 
   constructor() {
-    race(this.deferedAction$.out$, this.action$.out$)
+    merge(this.deferedAction$, this.action$)
       .pipe(
         withLatestFrom(this.state$),
         mergeMap(([a, s]) => from(this.dispatch(a, s))),
       )
       .subscribe(this.handleStateChange)
+
     this.state$.subscribe(s => {
-      console.log('go next, deferedAcrionsEmpty?', this.deferedAction$.isEmpty)
-      this.deferedAction$.isEmpty
-        ? this.action$.next()
-        : this.deferedAction$.next()
+      console.log('----go next, deferedActionEmpty?', this.deferedAction$.isEmpty)
+      !this.deferedAction$.isEmpty
+        ? this.deferedAction$.trigger()
+        : this.action$.trigger()
     })
   }
 }
 
 async function main() {
   const d = new Dispatcher()
-  d.action('LONG')
-  d.action('SHORT')
+  d.action('SET_LONG')
+  d.action('SET_SHORT')
+  d.action('SET_LONG')
+  d.action('SET_READY')
+  d.action('SET_SHORT')
   d.action('SET_READY')
 }
 
