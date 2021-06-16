@@ -59,8 +59,8 @@ export class RxQueue<T> {
   }
 }
 
-export class RxQueue2<T> extends Subject<T> {
-  private queue: T[] = []
+export class TriggerSubject<T> extends Subject<T> {
+  public queue: T[] = []
   private awaited = 0
 
   public get isEmpty() {
@@ -80,15 +80,15 @@ export class RxQueue2<T> extends Subject<T> {
     }
   }
 
-  // public putFirst(value: T) {
-  //   if (this.closed) return
-  //   if (this.awaited > 0) {
-  //     this.awaited--
-  //     super.next(value)
-  //   } else {
-  //     this.queue.unshift(value)
-  //   }
-  // }
+  public putFirst(value: T) {
+    if (this.closed) return
+    if (this.awaited > 0) {
+      this.awaited--
+      super.next(value)
+    } else {
+      this.queue.unshift(value)
+    }
+  }
 
   public trigger() {
     if (this.closed) return
@@ -115,8 +115,8 @@ type DeferedAction = [ expr: (s: string) => boolean, action: string ]
 
 class Dispatcher {
   private state$ = new BehaviorSubject<string>('INITIAL')
-  private action$ = new RxQueue2<string>()
-  private deferedAction$ = new RxQueue2<string>()
+  private action$ = new TriggerSubject<string>()
+  // private deferedAction$ = new RxQueue2<string>()
 
   private waitForStateList: DeferedAction[] = []
 
@@ -167,9 +167,9 @@ class Dispatcher {
     for (let i = 0; i < this.waitForStateList.length; i++) {
       const [expr, type] = this.waitForStateList[i]
       if (expr(newState)) {
-        console.log('----found defered task', type)
         this.waitForStateList.splice(i, 1)
-        this.deferedAction$.next(type)
+        this.action$.putFirst(type)
+        console.log('----found defered task and put it at first', this.action$.queue)
         break
       }
     }
@@ -179,7 +179,7 @@ class Dispatcher {
   }
 
   constructor() {
-    merge(this.deferedAction$, this.action$)
+    this.action$
       .pipe(
         withLatestFrom(this.state$),
         mergeMap(([a, s]) => from(this.dispatch(a, s))),
@@ -187,10 +187,8 @@ class Dispatcher {
       .subscribe(this.handleStateChange)
 
     this.state$.subscribe(s => {
-      console.log('----go next, deferedActionEmpty?', this.deferedAction$.isEmpty)
-      !this.deferedAction$.isEmpty
-        ? this.deferedAction$.trigger()
-        : this.action$.trigger()
+      console.log('----trigger next', this.action$.queue)
+      this.action$.trigger()
     })
   }
 }
