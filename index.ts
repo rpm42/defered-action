@@ -1,5 +1,5 @@
-import { BehaviorSubject, of, Subject, from, race, merge } from 'rxjs'
-import { map, withLatestFrom, mergeMap, filter, tap } from 'rxjs/operators'
+import { BehaviorSubject, of, Subject, from, race, merge, asapScheduler, asyncScheduler, queueScheduler } from 'rxjs'
+import { map, withLatestFrom, mergeMap, filter, tap, delay } from 'rxjs/operators'
 
 export class RxQueue<T> {
   public queue: T[] = []
@@ -131,13 +131,29 @@ class Dispatcher {
   //   })
   // }
 
-  private defer(fn: (...args: any) => void, ...args: any) {
-    fn.apply(this, args)
-  }
+  // private defer(fn: (...args: any) => void, ...args: any) {
+  //   fn.apply(this, args)
+  // }
 
   private deferUntil(type: string, expr: (s: string) => boolean) {
     console.log('----push waiting list')
     this.waitForStateList.push([expr, type])
+  }
+
+  private deferAsync = (fn: (...args: any) => void, ...args: any) => {
+    asyncScheduler.schedule(() => fn.apply(this, args))
+  }
+
+  private defer = (fn: (...args: any) => void, ...args: any) => {
+    asapScheduler.schedule(() => fn.apply(this, args))
+  }
+
+  private deferQue = (fn: (...args: any) => void, ...args: any) => {
+    queueScheduler.schedule(() => fn.apply(this, args))
+  }
+
+  private deferZero = (fn: (...args: any) => void, ...args: any) => {
+    fn.apply(this, args)
   }
 
   public dispatch = async (type: string, state: string) => {
@@ -153,6 +169,15 @@ class Dispatcher {
         return 'READY'
       case 'SET_SHORT':
         return 'STATE_SHORT'
+      case 'DO_DEFERED':
+        this.defer(async (type: string, state: string) => {
+          console.log('*** do some defered work', type, state)
+          await of(null).pipe(delay(0)).toPromise()
+          console.log('*** finish some defered work', type, state)
+          this.action('SET_READY')
+        }, type, state)
+        console.log('----continue DO_DEFERED action')
+        return 'DEFERED'
     }
     return state
   }
@@ -183,6 +208,7 @@ class Dispatcher {
       .pipe(
         withLatestFrom(this.state$),
         mergeMap(([a, s]) => from(this.dispatch(a, s))),
+        tap(s => console.log('----exis Dispatch with', s))
       )
       .subscribe(this.handleStateChange)
 
@@ -196,11 +222,19 @@ class Dispatcher {
 async function main() {
   const d = new Dispatcher()
   d.action('SET_LONG')
-  d.action('SET_SHORT')
   d.action('SET_LONG')
-  d.action('SET_READY')
-  d.action('SET_SHORT')
-  d.action('SET_READY')
+  d.action('SET_LONG')
+  d.action('DO_DEFERED')
+  d.action('DO_DEFERED')
+  d.action('DO_DEFERED')
+  // d.action('DO_DEFERED')
+  // d.action('SET_LONG')
+  // d.action('DO_DEFERED')
+  // d.action('SET_READY')
+  // d.action('DO_DEFERED')
+  // d.action('SET_SHORT')
+  // d.action('DO_DEFERED')
+  // d.action('SET_READY')
 }
 
 main()
